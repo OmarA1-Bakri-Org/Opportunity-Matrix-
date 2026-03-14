@@ -34,40 +34,38 @@ class TestRedditCollector:
 
     @pytest.fixture
     def rube_reddit_response(self):
-        """Simulates the parsed Rube REDDIT_SEARCH response structure."""
+        """Simulates the parsed Rube REDDIT_SEARCH response structure.
+
+        Rube wraps Reddit results in response.data_preview.posts (small payloads)
+        or response.data.data.children (raw Reddit structure).
+        """
         return [{
             "response": {
-                "data": {
-                    "data": {
-                        "children": [
-                            {
-                                "data": {
-                                    "id": "r1",
-                                    "title": "I wish there was a better invoicing tool",
-                                    "selftext": "Current options are terrible",
-                                    "author": "redditor1",
-                                    "ups": 85,
-                                    "num_comments": 30,
-                                    "created_utc": 1710374400,
-                                    "subreddit": "SaaS",
-                                    "permalink": "/r/SaaS/comments/r1/test/",
-                                }
-                            },
-                            {
-                                "data": {
-                                    "id": "r2",
-                                    "title": "Random unrelated post",
-                                    "selftext": "Nothing to see here",
-                                    "author": "redditor2",
-                                    "ups": 5,
-                                    "num_comments": 1,
-                                    "created_utc": 1710374400,
-                                    "subreddit": "SaaS",
-                                    "permalink": "/r/SaaS/comments/r2/test/",
-                                }
-                            },
-                        ]
-                    }
+                "data_preview": {
+                    "posts": [
+                        {
+                            "id": "r1",
+                            "title": "I wish there was a better invoicing tool",
+                            "selftext": "Current options are terrible",
+                            "author": "redditor1",
+                            "score": 85,
+                            "num_comments": 30,
+                            "created_utc": 1710374400,
+                            "subreddit": "SaaS",
+                            "permalink": "/r/SaaS/comments/r1/test/",
+                        },
+                        {
+                            "id": "r2",
+                            "title": "Random unrelated post",
+                            "selftext": "Nothing to see here",
+                            "author": "redditor2",
+                            "score": 5,
+                            "num_comments": 1,
+                            "created_utc": 1710374400,
+                            "subreddit": "SaaS",
+                            "permalink": "/r/SaaS/comments/r2/test/",
+                        },
+                    ]
                 }
             }
         }]
@@ -83,8 +81,8 @@ class TestRedditCollector:
         )
         signals = await collector.collect()
 
-        # Only "I wish there was" should match keyword filter, not the random post
-        assert len(signals) >= 1
+        # No keyword re-filter — Rube search already relevance-matches, so both posts returned
+        assert len(signals) == 2
         assert signals[0].platform == Platform.REDDIT
         assert "invoicing" in signals[0].title
         assert signals[0].upvotes == 85

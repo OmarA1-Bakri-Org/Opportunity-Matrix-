@@ -47,11 +47,15 @@ class GitHubCollector(BaseCollector):
     async def _search_language(self, language: str, since: str) -> list[Signal]:
         query = f"language:{language} stars:>={self.config.min_stars} created:>={since}"
 
+        # Cap per_page at 5 to avoid Rube data_preview truncation.
+        # Rube returns full item dicts only when the response payload is
+        # small enough; above ~5 items it switches to data_preview which
+        # truncates both the array and each item's fields.
         tools = [{
             "tool_slug": "GITHUB_FIND_REPOSITORIES",
             "arguments": {
                 "query": query,
-                "per_page": min(self.config.max_results, 100),
+                "per_page": min(self.config.max_results, 5),
                 "sort": "stars",
                 "order": "desc",
             },
@@ -65,28 +69,34 @@ class GitHubCollector(BaseCollector):
             return []
 
     def _parse_results(self, results: list) -> list[Signal]:
-        """Parse Rube GITHUB_FIND_REPOSITORIES response into Signal objects."""
+        """Parse Rube GITHUB_FIND_REPOSITORIES response into Signal objects.
+
+        Each item in *results* is a per-tool result dict from Rube:
+            {response: {successful: bool, data: {items: [...]}}, tool_slug: str, ...}
+        """
         signals: list[Signal] = []
         if not results:
             return signals
 
         for result in results:
             data = result if isinstance(result, dict) else {}
-            response_data = data.get("response", data).get("data", data)
+            resp = data.get("response", data)
 
-            # GitHub search returns items array
-            items = response_data.get("items", [])
-            if not items:
-                items = response_data.get("repositories", [])
+            # Rube wraps GitHub data under 'data' or 'data_preview'
+            inner = resp.get("data", resp.get("data_preview", resp))
+
+            items = []
+            if isinstance(inner, dict):
+                items = inner.get("items", [])
+                if not items:
+                    items = inner.get("repositories", [])
 
             for repo in items:
+                # Skip truncation markers like "...98 more items"
+                if not isinstance(repo, dict):
+                    continue
                 name = repo.get("full_name", "")
                 description = repo.get("description", "") or ""
-                content = f"{name} {description}".lower()
-
-                all_keywords = self.keywords.all_keywords
-                if all_keywords and not any(kw.lower() in content for kw in all_keywords):
-                    continue
 
                 created_str = repo.get("created_at", "2026-01-01T00:00:00Z")
                 try:

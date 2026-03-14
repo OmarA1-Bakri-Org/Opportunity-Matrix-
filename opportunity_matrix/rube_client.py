@@ -112,14 +112,44 @@ class RubeClient:
                     for item in content["content"]:
                         if item.get("type") == "text":
                             try:
-                                return json.loads(item["text"])
+                                parsed = json.loads(item["text"])
                             except (json.JSONDecodeError, TypeError):
                                 return [item["text"]]
-                return content if isinstance(content, list) else [content]
+                            # Unwrap Rube MULTI_EXECUTE envelope:
+                            # {data: {data: {results: [{response: {...}, tool_slug, ...}]}}}
+                            return self._unwrap_rube_results(parsed)
+                if isinstance(content, list):
+                    return content
+                return [content]
 
             if "error" in result:
                 logger.error(f"Rube error: {result['error']}")
             return []
+
+    @staticmethod
+    def _unwrap_rube_results(parsed: Any) -> list[dict]:
+        """Extract per-tool result dicts from Rube MULTI_EXECUTE response envelope.
+
+        The Rube response structure is:
+            {data: {data: {results: [{response: {...}, tool_slug: str, index: int}, ...]}, ...}}
+
+        Returns the list of per-tool result dicts (the items inside ``results``).
+        If the structure doesn't match, returns the parsed value wrapped in a list.
+        """
+        if not isinstance(parsed, dict):
+            return [parsed] if parsed else []
+
+        # Navigate: data -> data -> results
+        outer_data = parsed.get("data", parsed)
+        if isinstance(outer_data, dict):
+            inner_data = outer_data.get("data", outer_data)
+            if isinstance(inner_data, dict):
+                results = inner_data.get("results", [])
+                if isinstance(results, list) and results:
+                    return results
+
+        # Fallback: return as single-element list
+        return [parsed]
 
     async def health_check(self) -> bool:
         """Check if Rube MCP is reachable."""

@@ -50,11 +50,16 @@ class RedditCollector(BaseCollector):
                     queries.append(f"subreddit:{sub}")
 
             for query in queries:
+                # Cap limit at 5 to avoid Rube data_preview truncation.
+                # Rube returns full post dicts only when the response
+                # payload is small; above ~5 items it switches to
+                # data_preview which truncates both the list and each
+                # item's fields.
                 tools = [{
                     "tool_slug": "REDDIT_SEARCH_ACROSS_SUBREDDITS",
                     "arguments": {
                         "search_query": query,
-                        "limit": min(self.config.max_results_per_sub, 100),
+                        "limit": min(self.config.max_results_per_sub, 5),
                         "restrict_sr": True,
                         "sort": "new",
                     },
@@ -67,35 +72,43 @@ class RedditCollector(BaseCollector):
         return signals
 
     def _parse_results(self, results: list) -> list[Signal]:
-        """Parse Rube REDDIT_SEARCH response into Signal objects."""
+        """Parse Rube REDDIT_SEARCH response into Signal objects.
+
+        Each item in *results* is a per-tool result dict from Rube:
+            {response: {successful: bool, data_preview: {posts: [...]}}, tool_slug: str, ...}
+        """
         signals: list[Signal] = []
         if not results:
             return signals
 
-        # Navigate the Rube response structure
-        # results may be a list of tool execution results
         for result in results:
             data = result if isinstance(result, dict) else {}
+            resp = data.get("response", data)
 
-            # The response might be nested under 'response' or 'data'
-            response_data = data.get("response", data).get("data", data)
+            # Rube wraps Reddit data in 'data_preview' or 'data'
+            preview = resp.get("data_preview", resp.get("data", {}))
+            posts = []
+            if isinstance(preview, dict):
+                posts = preview.get("posts", [])
+                # Fallback: raw Reddit structure with children
+                if not posts:
+                    posts = preview.get("children", [])
+                # Fallback: items list
+                if not posts:
+                    posts = preview.get("items", [])
 
-            # Reddit search returns children array
-            children = response_data.get("data", {}).get("children", [])
-            if not children:
-                # Try flat items list
-                children = response_data.get("items", [])
-
-            for child in children:
+            for child in posts:
+                # Skip truncation markers like "...8 more items"
+                if not isinstance(child, dict):
+                    continue
                 post = child.get("data", child)
                 title = post.get("title", "")
                 body = post.get("selftext", "")
 
-                # Keyword filter
-                content = f"{title} {body}".lower()
-                all_keywords = self.keywords.all_keywords
-                if all_keywords and not any(kw.lower() in content for kw in all_keywords):
-                    continue
+                # No redundant keyword re-filter: the Rube search query
+                # already contains keyword terms, so returned posts are
+                # relevance-matched by Reddit.  Re-filtering with exact
+                # substring match would drop most results.
 
                 created_utc = post.get("created_utc", 0)
                 if isinstance(created_utc, (int, float)) and created_utc > 0:
@@ -110,7 +123,7 @@ class RedditCollector(BaseCollector):
                     body=body,
                     url=f"https://reddit.com{post.get('permalink', '')}",
                     author=post.get("author", ""),
-                    upvotes=post.get("ups", 0),
+                    upvotes=post.get("score", post.get("ups", 0)),
                     comments_count=post.get("num_comments", 0),
                     created_at=created_at,
                     raw_json=str(post),

@@ -1,0 +1,29 @@
+[skill]
+name = "opportunity-matrix"
+description = "Scan social platforms for validated software opportunities"
+version = "0.1.0"
+
+[[tools]]
+name = "scan"
+command = "cd /opt/opportunity-matrix && python -m opportunity_matrix scan"
+description = "Run all collectors, score results, store in SQLite"
+
+[[tools]]
+name = "scan-source"
+command = "cd /opt/opportunity-matrix && python -m opportunity_matrix scan --source {source}"
+description = "Scan a single source (reddit, hn, github, twitter)"
+
+[[tools]]
+name = "report"
+command = "cd /opt/opportunity-matrix && python -m opportunity_matrix report --format md --top 10"
+description = "Generate top-10 opportunities digest in markdown"
+
+[[tools]]
+name = "query"
+command = "cd /opt/opportunity-matrix && python -m opportunity_matrix query --min-score {min_score} --days {days}"
+description = "Query stored opportunities with filters"
+
+[[tools]]
+name = "status"
+command = "cd /opt/opportunity-matrix && python -m opportunity_matrix status"
+description = "Show collector health, signal counts, last scan times"

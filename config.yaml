@@ -1,0 +1,116 @@
+collectors:
+  reddit:
+    enabled: true
+    subreddits:
+      - SaaS
+      - sideproject
+      - startups
+      - indiehackers
+      - webdev
+      - programming
+      - selfhosted
+      - Entrepreneur
+    frequency_hours: 6
+    max_results_per_sub: 50
+
+  hackernews:
+    enabled: true
+    feeds:
+      - showstories
+      - askstories
+    frequency_hours: 2
+    algolia_search: true
+    max_results: 200
+
+  github:
+    enabled: true
+    frequency_hours: 12
+    languages:
+      - python
+      - typescript
+      - javascript
+      - go
+      - rust
+    min_stars: 10
+    max_results: 100
+
+  twitter:
+    enabled: false  # blocked: client-not-enrolled
+    frequency_hours: 6
+    max_results: 100
+
+  producthunt:
+    enabled: false  # deferred: needs OAuth app
+    frequency_hours: 24
+
+keywords:
+  pain_points:
+    - "I wish there was"
+    - "looking for a tool"
+    - "frustrated with"
+    - "anyone built"
+    - "need a solution"
+    - "pain point"
+    - "hate using"
+    - "why is there no"
+
+  launches:
+    - "Show HN"
+    - "just launched"
+    - "side project"
+    - "open source alternative"
+    - "built this"
+    - "weekend project"
+    - "my first SaaS"
+
+  gaps:
+    - "no good solution"
+    - "why isn't there"
+    - "someone should build"
+    - "missing from"
+    - "gap in the market"
+    - "underserved"
+
+scoring:
+  weights:
+    engagement: 0.25
+    cross_platform: 0.45
+    feasibility: 0.30
+
+  feasibility_rules:
+    boosters:
+      - pattern: "API wrapper"
+        score: 0.3
+      - pattern: "CLI tool"
+        score: 0.3
+      - pattern: "browser extension"
+        score: 0.3
+      - pattern: "Chrome extension"
+        score: 0.2
+      - pattern: "VS Code extension"
+        score: 0.2
+      - pattern: "open source alternative"
+        score: 0.2
+    penalties:
+      - pattern: "enterprise"
+        score: -0.3
+      - pattern: "requires team"
+        score: -0.3
+      - pattern: "ML infrastructure"
+        score: -0.3
+      - pattern: "regulatory"
+        score: -0.4
+      - pattern: "compliance"
+        score: -0.4
+      - pattern: "healthcare"
+        score: -0.4
+
+  llm:
+    enabled: false  # enable when LLM_API_KEY is set
+    min_feasibility: 0.6
+    min_composite: 0.5
+
+cross_platform:
+  similarity_threshold: 0.65
+  recency_window_hours: 168  # 7 days
+  high_recency_hours: 48

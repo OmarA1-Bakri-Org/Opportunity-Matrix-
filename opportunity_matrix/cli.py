@@ -63,6 +63,10 @@ async def _run_scan(config, settings, db: Database, source: Optional[str] = None
     from opportunity_matrix.collectors.reddit import RedditCollector
     from opportunity_matrix.collectors.github_trending import GitHubCollector
     from opportunity_matrix.collectors.twitter import TwitterCollector
+    from opportunity_matrix.rube_client import RubeClient
+
+    # Create shared Rube MCP client for Reddit, GitHub, and Twitter collectors
+    rube = RubeClient(url=settings.rube_mcp, token=settings.rube_token) if settings.rube_token else None
 
     collectors = []
 
@@ -73,18 +77,17 @@ async def _run_scan(config, settings, db: Database, source: Optional[str] = None
     if source is None or source == "reddit":
         if config.collectors.reddit.enabled:
             collectors.append(RedditCollector(
-                config.collectors.reddit, config.keywords,
-                client_id=settings.reddit_client_id,
-                client_secret=settings.reddit_client_secret,
-                username=settings.reddit_username,
-                password=settings.reddit_password,
+                config=config.collectors.reddit,
+                keywords=config.keywords,
+                rube=rube,
             ))
 
     if source is None or source == "github":
         if config.collectors.github.enabled:
             collectors.append(GitHubCollector(
-                config.collectors.github, config.keywords,
-                token=settings.github_token,
+                config=config.collectors.github,
+                keywords=config.keywords,
+                rube=rube,
             ))
 
     if source is None or source == "twitter":

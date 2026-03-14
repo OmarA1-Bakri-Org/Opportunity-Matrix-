@@ -1,20 +1,16 @@
-"""Reddit collector — OAuth2 + subreddit scraping with keyword filtering."""
+"""Reddit collector — searches Reddit via Rube MCP."""
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
 
-import httpx
-
 from opportunity_matrix.collectors.base import BaseCollector
 from opportunity_matrix.config import RedditConfig, KeywordsConfig
+from opportunity_matrix.rube_client import RubeClient
 from opportunity_matrix.storage.models import Platform, Signal
 
 logger = logging.getLogger(__name__)
-
-REDDIT_AUTH_URL = "https://www.reddit.com/api/v1/access_token"
-REDDIT_API_BASE = "https://oauth.reddit.com"
 
 
 class RedditCollector(BaseCollector):
@@ -22,6 +18,8 @@ class RedditCollector(BaseCollector):
         self,
         config: RedditConfig,
         keywords: KeywordsConfig,
+        rube: RubeClient | None = None,
+        # Keep old params for backwards compat but unused
         client_id: str = "",
         client_secret: str = "",
         username: str = "",
@@ -29,96 +27,98 @@ class RedditCollector(BaseCollector):
     ):
         self.config = config
         self.keywords = keywords
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.username = username
-        self.password = password
-
-    async def _get_access_token(self, client: httpx.AsyncClient) -> str | None:
-        try:
-            resp = await client.post(
-                REDDIT_AUTH_URL,
-                auth=(self.client_id, self.client_secret),
-                data={
-                    "grant_type": "password",
-                    "username": self.username,
-                    "password": self.password,
-                },
-                headers={"User-Agent": "OpportunityMatrix/0.1"},
-            )
-            resp.raise_for_status()
-            return resp.json().get("access_token")
-        except Exception as e:
-            logger.error(f"Reddit auth failed: {e}")
-            return None
+        self.rube = rube
 
     async def collect(self) -> list[Signal]:
+        if not self.rube or not self.rube.token:
+            logger.warning("Rube not configured, skipping Reddit collection")
+            return []
+
         signals: list[Signal] = []
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                token = await self._get_access_token(client)
-                if not token:
-                    return []
+            all_kw = self.keywords.all_keywords
+            # Build search queries from keywords, or use subreddit names
+            queries = []
+            if all_kw:
+                # Search across Reddit using keywords in batches
+                for i in range(0, len(all_kw), 3):
+                    batch = all_kw[i:i + 3]
+                    queries.append(" OR ".join(batch))
+            else:
+                # If no keywords, search by subreddit names as topics
+                for sub in self.config.subreddits:
+                    queries.append(f"subreddit:{sub}")
 
-                headers = {
-                    "Authorization": f"Bearer {token}",
-                    "User-Agent": "OpportunityMatrix/0.1",
-                }
-
-                for subreddit in self.config.subreddits:
-                    sub_signals = await self._collect_subreddit(client, headers, subreddit)
-                    signals.extend(sub_signals)
+            for query in queries:
+                tools = [{
+                    "tool_slug": "REDDIT_SEARCH_ACROSS_SUBREDDITS",
+                    "arguments": {
+                        "search_query": query,
+                        "limit": min(self.config.max_results_per_sub, 100),
+                        "restrict_sr": True,
+                        "sort": "new",
+                    },
+                }]
+                results = await self.rube.execute_tools(tools)
+                parsed = self._parse_results(results)
+                signals.extend(parsed)
         except Exception as e:
             logger.error(f"Reddit collection failed: {e}")
         return signals
 
-    async def _collect_subreddit(
-        self, client: httpx.AsyncClient, headers: dict, subreddit: str
-    ) -> list[Signal]:
-        try:
-            resp = await client.get(
-                f"{REDDIT_API_BASE}/r/{subreddit}/new",
-                headers=headers,
-                params={"limit": self.config.max_results_per_sub},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            logger.error(f"Reddit r/{subreddit} failed: {e}")
-            return []
-
+    def _parse_results(self, results: list) -> list[Signal]:
+        """Parse Rube REDDIT_SEARCH response into Signal objects."""
         signals: list[Signal] = []
-        for child in data.get("data", {}).get("children", []):
-            post = child.get("data", {})
-            title = post.get("title", "")
-            body = post.get("selftext", "")
-            content = f"{title} {body}".lower()
+        if not results:
+            return signals
 
-            all_keywords = self.keywords.all_keywords
-            if all_keywords and not any(kw.lower() in content for kw in all_keywords):
-                continue
+        # Navigate the Rube response structure
+        # results may be a list of tool execution results
+        for result in results:
+            data = result if isinstance(result, dict) else {}
 
-            signals.append(Signal(
-                platform=Platform.REDDIT,
-                platform_id=post.get("id", ""),
-                title=title,
-                body=body,
-                url=f"https://reddit.com{post.get('permalink', '')}",
-                author=post.get("author", ""),
-                upvotes=post.get("ups", 0),
-                comments_count=post.get("num_comments", 0),
-                created_at=datetime.fromtimestamp(
-                    post.get("created_utc", 0), tz=timezone.utc
-                ),
-                raw_json=str(post),
-                metadata={"subreddit": post.get("subreddit", subreddit)},
-            ))
+            # The response might be nested under 'response' or 'data'
+            response_data = data.get("response", data).get("data", data)
+
+            # Reddit search returns children array
+            children = response_data.get("data", {}).get("children", [])
+            if not children:
+                # Try flat items list
+                children = response_data.get("items", [])
+
+            for child in children:
+                post = child.get("data", child)
+                title = post.get("title", "")
+                body = post.get("selftext", "")
+
+                # Keyword filter
+                content = f"{title} {body}".lower()
+                all_keywords = self.keywords.all_keywords
+                if all_keywords and not any(kw.lower() in content for kw in all_keywords):
+                    continue
+
+                created_utc = post.get("created_utc", 0)
+                if isinstance(created_utc, (int, float)) and created_utc > 0:
+                    created_at = datetime.fromtimestamp(created_utc, tz=timezone.utc)
+                else:
+                    created_at = datetime.now(timezone.utc)
+
+                signals.append(Signal(
+                    platform=Platform.REDDIT,
+                    platform_id=str(post.get("id", "")),
+                    title=title,
+                    body=body,
+                    url=f"https://reddit.com{post.get('permalink', '')}",
+                    author=post.get("author", ""),
+                    upvotes=post.get("ups", 0),
+                    comments_count=post.get("num_comments", 0),
+                    created_at=created_at,
+                    raw_json=str(post),
+                    metadata={"subreddit": post.get("subreddit", "")},
+                ))
         return signals
 
     async def health_check(self) -> bool:
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                token = await self._get_access_token(client)
-                return token is not None
-        except Exception:
+        if not self.rube:
             return False
+        return await self.rube.health_check()

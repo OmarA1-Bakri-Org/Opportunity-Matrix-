@@ -1,9 +1,13 @@
-"""Tests for Reddit collector."""
+"""Tests for Reddit collector (Rube MCP)."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, patch
 
 import pytest
-import respx
 from opportunity_matrix.collectors.reddit import RedditCollector
 from opportunity_matrix.config import RedditConfig, KeywordsConfig
+from opportunity_matrix.rube_client import RubeClient
 from opportunity_matrix.storage.models import Platform
 
 
@@ -24,59 +28,155 @@ class TestRedditCollector:
             gaps=[],
         )
 
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_collect_from_subreddits(self, reddit_config, keywords):
-        respx.post("https://www.reddit.com/api/v1/access_token").respond(
-            json={"access_token": "test_token", "token_type": "bearer", "expires_in": 3600}
-        )
-        respx.get("https://oauth.reddit.com/r/SaaS/new").respond(
-            json={
+    @pytest.fixture
+    def rube(self):
+        return RubeClient(url="https://rube.app/mcp", token="test-token")
+
+    @pytest.fixture
+    def rube_reddit_response(self):
+        """Simulates the parsed Rube REDDIT_SEARCH response structure."""
+        return [{
+            "response": {
                 "data": {
-                    "children": [
-                        {
-                            "data": {
-                                "id": "r1",
-                                "title": "I wish there was a better invoicing tool",
-                                "selftext": "Current options are terrible",
-                                "url": "https://reddit.com/r/SaaS/r1",
-                                "author": "redditor1",
-                                "ups": 85,
-                                "num_comments": 30,
-                                "created_utc": 1710374400,
-                                "subreddit": "SaaS",
-                                "permalink": "/r/SaaS/comments/r1/test/",
-                            }
-                        }
-                    ]
+                    "data": {
+                        "children": [
+                            {
+                                "data": {
+                                    "id": "r1",
+                                    "title": "I wish there was a better invoicing tool",
+                                    "selftext": "Current options are terrible",
+                                    "author": "redditor1",
+                                    "ups": 85,
+                                    "num_comments": 30,
+                                    "created_utc": 1710374400,
+                                    "subreddit": "SaaS",
+                                    "permalink": "/r/SaaS/comments/r1/test/",
+                                }
+                            },
+                            {
+                                "data": {
+                                    "id": "r2",
+                                    "title": "Random unrelated post",
+                                    "selftext": "Nothing to see here",
+                                    "author": "redditor2",
+                                    "ups": 5,
+                                    "num_comments": 1,
+                                    "created_utc": 1710374400,
+                                    "subreddit": "SaaS",
+                                    "permalink": "/r/SaaS/comments/r2/test/",
+                                }
+                            },
+                        ]
+                    }
                 }
             }
-        )
-        respx.get("https://oauth.reddit.com/r/sideproject/new").respond(
-            json={"data": {"children": []}}
-        )
+        }]
+
+    @pytest.mark.asyncio
+    async def test_collect_from_subreddits(self, reddit_config, keywords, rube, rube_reddit_response):
+        rube.execute_tools = AsyncMock(return_value=rube_reddit_response)
 
         collector = RedditCollector(
-            reddit_config, keywords,
-            client_id="test_id", client_secret="test_secret",
-            username="test_user", password="test_pass",
+            config=reddit_config,
+            keywords=keywords,
+            rube=rube,
         )
         signals = await collector.collect()
 
+        # Only "I wish there was" should match keyword filter, not the random post
         assert len(signals) >= 1
         assert signals[0].platform == Platform.REDDIT
         assert "invoicing" in signals[0].title
         assert signals[0].upvotes == 85
+        assert signals[0].author == "redditor1"
+        assert signals[0].metadata["subreddit"] == "SaaS"
 
-    @respx.mock
+        # Verify Rube was called with correct tool slug
+        rube.execute_tools.assert_called()
+        call_args = rube.execute_tools.call_args_list[0][0][0]
+        assert call_args[0]["tool_slug"] == "REDDIT_SEARCH_ACROSS_SUBREDDITS"
+
     @pytest.mark.asyncio
-    async def test_collect_handles_auth_failure(self, reddit_config, keywords):
-        respx.post("https://www.reddit.com/api/v1/access_token").respond(status_code=401)
+    async def test_collect_no_rube_returns_empty(self, reddit_config, keywords):
+        collector = RedditCollector(
+            config=reddit_config,
+            keywords=keywords,
+            rube=None,
+        )
+        signals = await collector.collect()
+        assert signals == []
+
+    @pytest.mark.asyncio
+    async def test_collect_no_rube_token_returns_empty(self, reddit_config, keywords):
+        rube = RubeClient(url="https://rube.app/mcp", token="")
+        collector = RedditCollector(
+            config=reddit_config,
+            keywords=keywords,
+            rube=rube,
+        )
+        signals = await collector.collect()
+        assert signals == []
+
+    @pytest.mark.asyncio
+    async def test_collect_handles_rube_error(self, reddit_config, keywords, rube):
+        rube.execute_tools = AsyncMock(side_effect=Exception("Rube connection failed"))
 
         collector = RedditCollector(
-            reddit_config, keywords,
-            client_id="bad", client_secret="bad",
-            username="bad", password="bad",
+            config=reddit_config,
+            keywords=keywords,
+            rube=rube,
         )
+        signals = await collector.collect()
+        assert signals == []
+
+    @pytest.mark.asyncio
+    async def test_collect_empty_results(self, reddit_config, keywords, rube):
+        rube.execute_tools = AsyncMock(return_value=[])
+
+        collector = RedditCollector(
+            config=reddit_config,
+            keywords=keywords,
+            rube=rube,
+        )
+        signals = await collector.collect()
+        assert signals == []
+
+    @pytest.mark.asyncio
+    async def test_health_check_no_rube(self, reddit_config, keywords):
+        collector = RedditCollector(
+            config=reddit_config,
+            keywords=keywords,
+            rube=None,
+        )
+        healthy = await collector.health_check()
+        assert healthy is False
+
+    @pytest.mark.asyncio
+    async def test_health_check_delegates_to_rube(self, reddit_config, keywords, rube):
+        rube.health_check = AsyncMock(return_value=True)
+
+        collector = RedditCollector(
+            config=reddit_config,
+            keywords=keywords,
+            rube=rube,
+        )
+        healthy = await collector.health_check()
+        assert healthy is True
+
+    @pytest.mark.asyncio
+    async def test_backwards_compat_old_params_ignored(self, reddit_config, keywords, rube):
+        """Old client_id/client_secret/username/password params are accepted but unused."""
+        rube.execute_tools = AsyncMock(return_value=[])
+
+        collector = RedditCollector(
+            config=reddit_config,
+            keywords=keywords,
+            rube=rube,
+            client_id="old_id",
+            client_secret="old_secret",
+            username="old_user",
+            password="old_pass",
+        )
+        # Should not raise, old params are accepted
         signals = await collector.collect()
         assert signals == []
